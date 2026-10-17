@@ -1,0 +1,247 @@
+name: tarifario-cert
+
+services:
+  keycloak-db:
+    image: postgres:16.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env.cert}
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
+    networks:
+      - cla-cert-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1.0
+    command: start --http-enabled=true --import-realm
+    restart: unless-stopped
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-db
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env.cert}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?Set KEYCLOAK_ADMIN_USERNAME in .env.cert}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env.cert}
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:?Set KEYCLOAK_PUBLIC_URL in .env.cert}
+    volumes:
+      - ./keycloak/corebank-local-realm.json:/opt/keycloak/data/import/corebank-local-realm.json:ro
+    ports:
+      - "8081:8080"
+    networks:
+      - cla-cert-network
+
+  keycloak-init:
+    image: quay.io/keycloak/keycloak:26.1.0
+    entrypoint: []
+    depends_on:
+      keycloak:
+        condition: service_started
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USERNAME:?Set KEYCLOAK_ADMIN_USERNAME in .env.cert}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env.cert}
+      COREBANK_TARIFARIO_CLIENT_SECRET: ${COREBANK_TARIFARIO_CLIENT_SECRET:?Set COREBANK_TARIFARIO_CLIENT_SECRET in .env.cert}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        until /opt/keycloak/bin/kcadm.sh config credentials --server http://keycloak:8080 --realm master --user "$${KEYCLOAK_ADMIN}" --password "$${KEYCLOAK_ADMIN_PASSWORD}"; do sleep 2; done
+        client_id=$$(/opt/keycloak/bin/kcadm.sh get clients -r corebank-local -q clientId=corebank-tarifario --fields id --format csv --noquotes)
+        /opt/keycloak/bin/kcadm.sh update clients/$${client_id} -r corebank-local -s secret="$${COREBANK_TARIFARIO_CLIENT_SECRET}"
+    networks:
+      - cla-cert-network
+
+  kafka:
+    image: apache/kafka:3.9.0
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:?Set KAFKA_CLUSTER_ID in .env.cert}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    networks:
+      - cla-cert-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_TOPIC: ${KAFKA_TOPIC:?Set KAFKA_TOPIC in .env.cert}
+    command:
+      - /bin/bash
+      - -ec
+      - >-
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+        --topic "$${KAFKA_TOPIC}" --partitions 3 --replication-factor 1
+    networks:
+      - cla-cert-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: certification
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    ports:
+      - "8088:8080"
+    networks:
+      - cla-cert-network
+
+  discount-pricing-s:
+    build:
+      context: E:\cla\repositorios\discountpricings
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      MONGO_QUERY_DB_SERVER: ${MONGO_HOST:?Set MONGO_HOST in .env.cert}
+      MONGO_QUERY_DB_NAME: ${MONGO_QUERY_DB_NAME:?Set MONGO_QUERY_DB_NAME in .env.cert}
+      MONGO_QUERY_DB_USER: ${MONGO_QUERY_DB_USER:?Set MONGO_QUERY_DB_USER in .env.cert}
+      MONGO_QUERY_DB_PASSWORD: ${MONGO_QUERY_DB_PASSWORD:?Set MONGO_QUERY_DB_PASSWORD in .env.cert}
+      MONGO_MAINTENANCE_DB_SERVER: ${MONGO_HOST:?Set MONGO_HOST in .env.cert}
+      MONGO_MAINTENANCE_DB_NAME: ${MONGO_MAINTENANCE_DB_NAME:?Set MONGO_MAINTENANCE_DB_NAME in .env.cert}
+      MONGO_MAINTENANCE_DB_USER: ${MONGO_MAINTENANCE_DB_USER:?Set MONGO_MAINTENANCE_DB_USER in .env.cert}
+      MONGO_MAINTENANCE_DB_PASSWORD: ${MONGO_MAINTENANCE_DB_PASSWORD:?Set MONGO_MAINTENANCE_DB_PASSWORD in .env.cert}
+      JWT_ISSUER: ${KEYCLOAK_PUBLIC_URL:?Set KEYCLOAK_PUBLIC_URL in .env.cert}/realms/corebank-local
+      JWT_AUDIENCE: product-pricing-x
+      JWT_READ_SCOPE: product-pricing-x
+      JWT_UPDATE_SCOPE: product-pricing-x
+      JWT_WRITE_SCOPE: product-pricing-x
+    ports:
+      - "127.0.0.1:8101:8080"
+    networks:
+      - cla-cert-network
+
+  clacreditos-api:
+    build:
+      context: E:\cla\repositorios\clacreditos__1
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:80
+      DB_SERVER: ${DB_SERVER:?Set DB_SERVER in .env.cert}
+      DB_NAME: ${DB_NAME:?Set DB_NAME in .env.cert}
+      DB_USER: ${DB_USER:?Set DB_USER in .env.cert}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.cert}
+      ProductosOfertas: ${PRODUCTOS_OFERTAS:-}
+      ProductosReenganche: ${PRODUCTOS_REENGANCHE:-}
+      SENTINEL_RESOURSE_URL: ${SENTINEL_RESOURSE_URL:?Set SENTINEL_RESOURSE_URL in .env.cert}
+      SENTINEL_KEYCLOAK_AUTH_URL: ${SENTINEL_KEYCLOAK_AUTH_URL:?Set SENTINEL_KEYCLOAK_AUTH_URL in .env.cert}
+      SENTINEL_KEYCLOAK_AUTH_CLIENT: ${SENTINEL_KEYCLOAK_AUTH_CLIENT:?Set SENTINEL_KEYCLOAK_AUTH_CLIENT in .env.cert}
+      SENTINEL_KEYCLOAK_AUTH_CLIENT_SECRET: ${SENTINEL_KEYCLOAK_AUTH_CLIENT_SECRET:?Set SENTINEL_KEYCLOAK_AUTH_CLIENT_SECRET in .env.cert}
+      SENTINEL_KEYCLOAK_AUTH_GRANT_TYPE: ${SENTINEL_KEYCLOAK_AUTH_GRANT_TYPE:?Set SENTINEL_KEYCLOAK_AUTH_GRANT_TYPE in .env.cert}
+      SENTINEL_KEYCLOAK_AUTH_SCOPE: ${SENTINEL_KEYCLOAK_AUTH_SCOPE:?Set SENTINEL_KEYCLOAK_AUTH_SCOPE in .env.cert}
+      SENTINEL_RESPONSE_TIMEOUT_SECONDS: ${SENTINEL_RESPONSE_TIMEOUT_SECONDS:?Set SENTINEL_RESPONSE_TIMEOUT_SECONDS in .env.cert}
+    ports:
+      - "127.0.0.1:8102:80"
+    networks:
+      - cla-cert-network
+
+  product-pricing-b:
+    build:
+      context: E:\cla\repositorios\productpricingb
+    restart: unless-stopped
+    depends_on:
+      discount-pricing-s:
+        condition: service_started
+      clacreditos-api:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: production
+      MICROSERVICE_NAME: product-pricing-b
+      AUTH_DISABLED: "true"
+      API_LOANS_URL_BASE: http://clacreditos-api:80
+      API_DISCOUNT_PRICING_URL_BASE: http://discount-pricing-s:8080
+      LOANS_PATH: api/creditos
+      DISCOUNT_PRICING_PATH: discount-pricing-s/v1
+      MAINTENANCE_PRICING_PATH: discount-pricing-s/v1/configured-pricing-maintenance
+      KAFKA_ENABLED: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:?Set KAFKA_TOPIC in .env.cert}
+      KAFKA_CLIENT_ID: product-pricing-b-cert
+    ports:
+      - "127.0.0.1:8100:80"
+    networks:
+      - cla-cert-network
+
+  trace-mongo-sink:
+    build:
+      context: ./trace-mongo-sink
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:?Set KAFKA_TOPIC in .env.cert}
+      KAFKA_GROUP_ID: trace-mongo-sink-cert
+      MONGO_CONNECTION_STRING: ${MONGO_TRACE_CONNECTION_STRING:?Set MONGO_TRACE_CONNECTION_STRING in .env.cert}
+      MONGO_DATABASE: SI_DBApibusEventHistory
+      MONGO_COLLECTION: MicroserviceCallTrace
+      MONGO_CREATE_INDEX: "false"
+    networks:
+      - cla-cert-network
+
+  product-pricing-x:
+    build:
+      context: ./productpricingx
+    restart: unless-stopped
+    depends_on:
+      keycloak-init:
+        condition: service_completed_successfully
+      product-pricing-b:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      Jwt__Issuer: ${KEYCLOAK_PUBLIC_URL:?Set KEYCLOAK_PUBLIC_URL in .env.cert}/realms/corebank-local
+      Jwt__MetadataAddress: http://keycloak:8080/realms/corebank-local/.well-known/openid-configuration
+      Jwt__JwksAddress: http://keycloak:8080/realms/corebank-local/protocol/openid-connect/certs
+      Jwt__Audience: product-pricing-x
+      ReverseProxy__Clusters__product-pricing-b__Destinations__primary__Address: http://product-pricing-b:80/
+    ports:
+      - "8003:8080"
+    networks:
+      - cla-cert-network
+
+networks:
+  cla-cert-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  keycloak-db-data:

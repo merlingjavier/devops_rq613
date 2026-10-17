@@ -1,0 +1,218 @@
+name: tarifario-dev
+
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - cla-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:3.9.0
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    networks:
+      - cla-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-product-pricing-traces}
+    command:
+      - /bin/bash
+      - -ec
+      - >-
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+        --topic "$${KAFKA_TOPIC}" --partitions 3 --replication-factor 1
+    networks:
+      - cla-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    ports:
+      - "8088:8080"
+    networks:
+      - cla-network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1.0
+    command: start-dev --import-realm --hostname=localhost --hostname-strict=false
+    restart: unless-stopped
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?Set KEYCLOAK_ADMIN_USERNAME in .env}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env}
+    volumes:
+      - ./keycloak/corebank-local-realm.json:/opt/keycloak/data/import/corebank-local-realm.json:ro
+    ports:
+      - "8081:8080"
+    networks:
+      - cla-network
+
+  keycloak-init:
+    image: quay.io/keycloak/keycloak:26.1.0
+    entrypoint: []
+    depends_on:
+      keycloak:
+        condition: service_started
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USERNAME:?Set KEYCLOAK_ADMIN_USERNAME in .env}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env}
+      COREBANK_TARIFARIO_CLIENT_SECRET: ${COREBANK_TARIFARIO_CLIENT_SECRET:?Set COREBANK_TARIFARIO_CLIENT_SECRET in .env}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        until /opt/keycloak/bin/kcadm.sh config credentials --server http://keycloak:8080 --realm master --user "$${KEYCLOAK_ADMIN}" --password "$${KEYCLOAK_ADMIN_PASSWORD}"; do sleep 2; done
+        client_id=$$(/opt/keycloak/bin/kcadm.sh get clients -r corebank-local -q clientId=corebank-tarifario --fields id --format csv --noquotes)
+        /opt/keycloak/bin/kcadm.sh update clients/$${client_id} -r corebank-local -s secret="$${COREBANK_TARIFARIO_CLIENT_SECRET}"
+    networks:
+      - cla-network
+
+  discount-pricing-s:
+    build:
+      context: E:\cla\repositorios\discountpricings
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      MongoQueryDatabase__Server: mongo:27017
+      MongoQueryDatabase__DatabaseName: ${MONGO_QUERY_DB_NAME:-discountpricing}
+      MongoMaintenanceDatabase__Server: mongo:27017
+      MongoMaintenanceDatabase__DatabaseName: ${MONGO_MAINTENANCE_DB_NAME:-discountpricing}
+    ports:
+      - "127.0.0.1:8001:8080"
+    networks:
+      - cla-network
+
+  clacreditos-api:
+    build:
+      context: E:\cla\repositorios\clacreditos__1
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:80
+      ConnectionStrings__DbDesarrollo23: ${SQL_CONNECTION_STRING:?Set SQL_CONNECTION_STRING in .env}
+      ConnectionStrings__ProductosOfertas: ${PRODUCTOS_OFERTAS:-}
+      ConnectionStrings__ProductosReenganche: ${PRODUCTOS_REENGANCHE:-}
+    ports:
+      - "127.0.0.1:8002:80"
+    networks:
+      - cla-network
+
+  product-pricing-b:
+    build:
+      context: E:\cla\repositorios\productpricingb
+    restart: unless-stopped
+    depends_on:
+      discount-pricing-s:
+        condition: service_started
+      clacreditos-api:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: development
+      MICROSERVICE_NAME: product-pricing-b
+      AUTH_DISABLED: "true"
+      API_LOANS_URL_BASE: http://clacreditos-api:80
+      API_DISCOUNT_PRICING_URL_BASE: http://discount-pricing-s:8080
+      LOANS_PATH: api/creditos
+      DISCOUNT_PRICING_PATH: discount-pricing-s/v1
+      MAINTENANCE_PRICING_PATH: discount-pricing-s/v1/configured-pricing-maintenance
+      KAFKA_ENABLED: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-product-pricing-traces}
+      KAFKA_CLIENT_ID: product-pricing-b
+    ports:
+      - "127.0.0.1:8000:80"
+    networks:
+      - cla-network
+
+  trace-mongo-sink:
+    build:
+      context: ./trace-mongo-sink
+    restart: unless-stopped
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-product-pricing-traces}
+      KAFKA_GROUP_ID: trace-mongo-sink
+      MONGO_CONNECTION_STRING: mongodb://mongo:27017
+      MONGO_DATABASE: SI_DBApibusEventHistory
+      MONGO_COLLECTION: MicroserviceCallTrace
+    networks:
+      - cla-network
+
+  product-pricing-x:
+    build:
+      context: ./productpricingx
+    restart: unless-stopped
+    depends_on:
+      keycloak-init:
+        condition: service_completed_successfully
+      product-pricing-b:
+        condition: service_started
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      Jwt__Issuer: http://localhost:8081/realms/corebank-local
+      Jwt__MetadataAddress: http://keycloak:8080/realms/corebank-local/.well-known/openid-configuration
+      Jwt__JwksAddress: http://keycloak:8080/realms/corebank-local/protocol/openid-connect/certs
+      Jwt__Audience: product-pricing-x
+      ReverseProxy__Clusters__product-pricing-b__Destinations__primary__Address: http://product-pricing-b:80/
+    ports:
+      - "8003:8080"
+    networks:
+      - cla-network
+
+networks:
+  cla-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  mongo-data:
