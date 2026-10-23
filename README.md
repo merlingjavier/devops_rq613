@@ -25,6 +25,14 @@ docker compose --env-file .env -f docker-compose.dev.yml up --build
 
 ProductPricingX (`8003`) es la entrada autenticada normal. Product Pricing (`8000`), Discount Pricing (`8001`) y Creditos (`8002`) se publican solo en `127.0.0.1` para validaciones directas; no deben usarse como punto de entrada de integracion.
 
+ProductPricingX admite el prefijo de experiencia `/product-pricing-x/v1` y lo elimina
+antes de reenviar a Product Pricing. Por ejemplo,
+`POST http://localhost:8003/product-pricing-x/v1/standard-rate-terms/evaluate`.
+Las rutas sin prefijo siguen disponibles para la configuracion actual de CoreBank.
+Las solicitudes requieren bearer token y los headers `deviceIdentifier`,
+`messageIdentification` y `channelIdentification`, de 5 a 42 caracteres cada uno.
+El contrato de rutas se detalla en [ProductPricingX](productpricingx/README.md).
+
 ## Trazabilidad Kafka
 
 Product Pricing publica en el topico configurado por `KAFKA_TOPIC` (por defecto, `product-pricing-traces`) las llamadas HTTP salientes hacia Creditos y Discount Pricing. Kafka UI permite consultar el topico, sus mensajes y particiones en `http://localhost:8088`.

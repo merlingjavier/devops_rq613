@@ -188,7 +188,7 @@ services:
       API_DISCOUNT_PRICING_URL_BASE: http://discount-pricing-s:8080
       LOANS_PATH: api/creditos
       DISCOUNT_PRICING_PATH: discount-pricing-s/v1
-      MAINTENANCE_PRICING_PATH: discount-pricing-s/v1/configured-pricing-maintenance
+      MAINTENANCE_PRICING_PATH: discount-pricing-s/v1/pricing-configuration-maintenance
       KAFKA_ENABLED: "true"
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: ${KAFKA_TOPIC:?Set KAFKA_TOPIC in .env.cert}

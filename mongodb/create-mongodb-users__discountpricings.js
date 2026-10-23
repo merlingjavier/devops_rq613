@@ -1,8 +1,12 @@
 const databaseName = "SI_DBProductManagement";
-const queryUsername = "discount-pricing-query";
-const queryPassword = "discount-pricing-query-password";
-const maintenanceUsername = "discount-pricing-maintenance";
-const maintenancePassword = "discount-pricing-maintenance-password";
+// const queryUsername = "discount-pricing-query";
+// const queryPassword = "discount-pricing-query-password";
+// const maintenanceUsername = "discount-pricing-maintenance";
+// const maintenancePassword = "discount-pricing-maintenance-password";
+const queryUsername = "BMLm4RnHdl0icZec0R6R4bz0E5gMkbiAxzmXGM8B1S2L4r7iVOnh7yga3nZqwyb9pD9zAB2Frn1NG6eSxF/Fg7p+el21DuwqFeqR5f8rklsj7dKb5Nz/OQo641d1Qagb";
+const queryPassword = "BMLm4RnHdl0icZec0R6R4f/dpd1GqCnnCFc2UZ1CN4qjkar2VcqTRURtob4z41NDLdxsMI/PrCxUS38FG1mQp9bBP2GiZBjBllFZ/MMskbQkIHxRAb8CbMQZbogouIkq";
+const maintenanceUsername = "BMLm4RnHdl0icZec0R6R4dAazIcL6rXiqv6d5ub9JK/SUPF6rrfhXsTJHFIFBFjtSZlrxBVM2zbmauuWpu0tO2zH2pV9mwhpcDx3wPKHrM8fJVPOXLho4Him1seyb/rF";
+const maintenancePassword = "BMLm4RnHdl0icZec0R6R4VYN9/bFfokzaN34aDCQSQLJdlWYAOck0wxgks73wrupXDd3agvgCQ3cdBVBRYiW9msLK0KVI1wkBJl25yNbBRAG5sB4RP3f7fREjUn6rhyi";
 const pricingDatabase = db.getSiblingDB(databaseName);
 const administrationDatabase = db.getSiblingDB("admin");
 
