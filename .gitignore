@@ -19,3 +19,4 @@ Thumbs.db
 .mypy_cache/
 
 AGENTS.md
+.dev/
